@@ -1,0 +1,10 @@
+{
+  "name": "SCP2006",
+  "version_number": "1.0.0",
+  "website_url": "https://github.com/snowlance7/SCP2006",
+  "description": "Adds a spooky thing to the game",
+  "dependencies": [
+    "BepInEx-BepInExPack-5.4.2100",
+    "Evaisa-LethalLib-1.1.1"
+  ]
+}
