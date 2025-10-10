@@ -458,6 +458,18 @@ namespace SCP2006
             return nodes[randIndex];
         }
 
+        public static GameObject? GetRandomNode()
+        {
+            logger.LogDebug("Choosing random node...");
+
+            GameObject[] nodes = allAINodes;
+
+            if (nodes.Length == 0) return null;
+
+            int randIndex = UnityEngine.Random.Range(0, nodes.Length);
+            return nodes[randIndex];
+        }
+
         public static Vector3 GetRandomNavMeshPositionInAnnulus(Vector3 center, float minRadius, float maxRadius, int sampleCount = 10)
         {
             Vector3 randomDirection;

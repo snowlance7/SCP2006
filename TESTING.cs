@@ -31,6 +31,8 @@ namespace SCP2006
         {
             if (!Utils.isBeta) { return; }
             if (!Utils.testing) { return; }
+
+
         }
 
         [HarmonyPrefix, HarmonyPatch(typeof(HUDManager), nameof(HUDManager.SubmitChat_performed))]
