@@ -54,16 +54,8 @@ namespace SCP2006
         [System.Serializable]
         public struct ScareVariant
         {
-            public float distanceToScare;
-            public string animName;
-            public bool animBool;
+            public string animStateName; // TODO: Find animation state names in lethal company unity project
             public AudioClip clip;
-
-            public bool windUp;
-            public float distanceToWindup;
-            public string windUpAnimName;
-            public bool windUpAnimBool;
-            public AudioClip windUpClip;
         }
     }
 }

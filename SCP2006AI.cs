@@ -1,11 +1,9 @@
 ﻿using BepInEx.Logging;
 using GameNetcodeStuff;
-using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using Unity.Netcode;
 using UnityEngine;
-using UnityEngine.ProBuilder;
 using static SCP2006.Plugin;
 using static SCP2006.Utils;
 using LethalLib.Modules;
@@ -18,6 +16,7 @@ using LethalLib.Modules;
 - resting (bool)
 - handOut (bool)
 - think
+- wave
  */
 
 namespace SCP2006
@@ -32,12 +31,19 @@ namespace SCP2006
         public ScareDef[] scareDefs;
         public Transform turnCompass;
         public GameObject mesh;
+        public AudioClip[] baitSFX;
 #pragma warning restore CS8618
 
         public static Dictionary<string, int> learnedScares = [];
 
         Vector3 mainEntranceOutsidePosition;
         Vector3 mainEntranceInsidePosition;
+
+        PlayerControllerB? playerSeenBy;
+
+        bool facePlayer;
+        PlayerControllerB? playerToFace;
+        float turnCompassSpeed = 30f;
 
         public bool isInsideFactory => !isOutside;
 
@@ -50,11 +56,18 @@ namespace SCP2006
         EnemyAI? mimicEnemy;
         float currentScareAnimationTime;
         ScareDef? currentScareDef;
-        int currentScareVariantIndex;
+        int currentVariantIndex;
+        private int currentFootstepSurfaceIndex;
+        private int previousFootstepClip;
+
+        ScareDef.ScareVariant currentVariant => currentScareDef.variants[currentVariantIndex];
 
         // Configs
         const float learnScareCooldown = 5f;
         const float targetPlayerCooldown = 10f;
+        const float timeBetweenAnimationSteps = 0.1f;
+        const float distanceToStartScare = 5f;
+        const float distanceToStopScare = 10f;
 
         public enum State
         {
@@ -137,8 +150,15 @@ namespace SCP2006
         {
             if (mimicEnemy != null)
             {
-                mimicEnemy.movingTowardsTargetPlayer = false;
-                mimicEnemy.SetDestinationToPosition(transform.position);
+                mimicEnemy.transform.position = transform.position;
+                //mimicEnemy.movingTowardsTargetPlayer = false;
+                //mimicEnemy.SetDestinationToPosition(transform.position);
+            }
+
+            if (facePlayer && playerToFace != null && IsServer)
+            {
+                turnCompass.LookAt(playerToFace.gameplayCamera.transform.position);
+                transform.rotation = Quaternion.Lerp(transform.rotation, Quaternion.Euler(new Vector3(0f, turnCompass.eulerAngles.y, 0f)), turnCompassSpeed * Time.deltaTime);
             }
         }
 
@@ -152,6 +172,8 @@ namespace SCP2006
             switch (currentBehaviourStateIndex)
             {
                 case (int)State.Roaming:
+                    agent.speed = 5;
+                    agent.stoppingDistance = 0;
 
                     // Check line of sight for player
                     if (timeSinceTargetPlayer > targetPlayerCooldown && TargetClosestPlayer(bufferDistance: default, requireLineOfSight: true))
@@ -161,14 +183,14 @@ namespace SCP2006
                         if (InLineOfSight())
                         {
                             inSpecialAnimation = true;
-                            DoAnimationClientRpc("shock");
-                            SwitchToBehaviourClientRpc((int)State.Spotted); // TODO: Maybe switch to him waving hello?
+                            DoAnimationClientRpc("wave");
+                            SwitchToBehaviourClientRpc((int)State.Spotted);
                             return;
                         }
 
                         agent.ResetPath();
                         currentScareDef = GetRandomScare();
-                        currentScareVariantIndex = UnityEngine.Random.Range(0, currentScareDef.variants.Length);
+                        currentVariantIndex = UnityEngine.Random.Range(0, currentScareDef.variants.Length);
                         SwitchToBehaviourClientRpc((int)State.Sneaking);
                         return;
                     }
@@ -209,6 +231,8 @@ namespace SCP2006
                     break;
 
                 case (int)State.Sneaking:
+                    agent.speed = 7;
+                    agent.stoppingDistance = distanceToStartScare;
 
                     if (InLineOfSight())
                     {
@@ -218,31 +242,38 @@ namespace SCP2006
                         return;
                     }
 
-                    var currentVariant = currentScareDef!.variants[currentScareVariantIndex];
-                    float distanceToScare = currentVariant.windUp ? currentVariant.distanceToWindup : currentVariant.distanceToScare;
-
-                    if (Vector3.Distance(transform.position, targetPlayer.transform.position) <= distanceToScare)
+                    if (Vector3.Distance(transform.position, targetPlayer.transform.position) <= distanceToStartScare)
                     {
-                        TrySpawnMimicEnemy();
+                        SpawnMimicEnemy();
                         SwitchToBehaviourClientRpc((int)State.Scaring); // TODO: Continue here
                         return;
                     }
 
+                    SetDestinationToPosition();
+
                     break;
 
                 case (int)State.Spotted:
+                    agent.speed = 5;
+                    agent.stoppingDistance = 0;
 
                     break;
 
                 case (int)State.Scaring:
+                    agent.speed = 5;
+                    agent.stoppingDistance = 0;
 
                     break;
 
                 case (int)State.Reaction:
+                    agent.speed = 5;
+                    agent.stoppingDistance = 0;
 
                     break;
 
                 case (int)State.Resting:
+                    agent.speed = 5;
+                    agent.stoppingDistance = 0;
 
                     break;
 
@@ -334,7 +365,11 @@ namespace SCP2006
             foreach (var player in StartOfRound.Instance.allPlayerScripts)
             {
                 if (!PlayerIsTargetable(player)) { continue; }
-                if (player.HasLineOfSightToPosition(transform.position + Vector3.up * 2)) { return true; }
+                if (player.HasLineOfSightToPosition(transform.position + Vector3.up * 2))
+                {
+                    playerSeenBy = player;
+                    return true;
+                }
             }
 
             return false;
@@ -349,7 +384,7 @@ namespace SCP2006
             return false;
         }
 
-        public void TrySpawnMimicEnemy()
+        public void SpawnMimicEnemy()
         {
             if (currentScareDef == null || currentScareDef.enemyTypeName == "") { return; }
             Enemies.SpawnableEnemy spawnableEnemy = Enemies.spawnableEnemies.Where(x => x.enemy.name == currentScareDef!.enemyTypeName).First();
@@ -357,8 +392,9 @@ namespace SCP2006
             GameObject enemyObj = Instantiate(enemyPrefab, transform.position, transform.rotation, transform);
             enemyObj.GetComponent<NetworkObject>().Spawn(true);
             mimicEnemy = enemyObj.GetComponent<EnemyAI>();
+            mimicEnemy.enabled = false;
 
-            SpawnMimicEnemyClientRpc(mimicEnemy.NetworkObject, currentScareVariantIndex);
+            SpawnMimicEnemyClientRpc(mimicEnemy.NetworkObject, currentVariantIndex);
         }
 
         public void DespawnMimicEnemy()
@@ -366,17 +402,34 @@ namespace SCP2006
             if (mimicEnemy == null || !mimicEnemy.NetworkObject.IsSpawned) { return; }
             logger.LogDebug("Despawning mimic enemy " + mimicEnemy.enemyType.name);
 
-            switch (mimicEnemy.enemyType.name)
+            /*switch (mimicEnemy.enemyType.name)
             {
                 case "Butler":
                     ButlerEnemyAI.murderMusicAudio.Stop();
                     break;
                 default:
                     break;
-            }
+            }*/
 
             mimicEnemy.NetworkObject.Despawn(true);
             mimicEnemy = null;
+        }
+
+        void GetCurrentMaterialStandingOn()
+        {
+            Ray interactRay = new Ray(transform.position + Vector3.up, -Vector3.up);
+            if (!Physics.Raycast(interactRay, out RaycastHit hit, 6f, StartOfRound.Instance.walkableSurfacesMask, QueryTriggerInteraction.Ignore) || hit.collider.CompareTag(StartOfRound.Instance.footstepSurfaces[currentFootstepSurfaceIndex].surfaceTag))
+            {
+                return;
+            }
+            for (int i = 0; i < StartOfRound.Instance.footstepSurfaces.Length; i++)
+            {
+                if (hit.collider.CompareTag(StartOfRound.Instance.footstepSurfaces[i].surfaceTag))
+                {
+                    currentFootstepSurfaceIndex = i;
+                    break;
+                }
+            }
         }
 
         #region Overrides
@@ -409,6 +462,19 @@ namespace SCP2006
         public void SetInSpecialAnimationFalse() => inSpecialAnimation = false;
         public void SetInSpecialAnimationTrue() => inSpecialAnimation = true;
 
+        public void PlayFootstepSFX()
+        {
+            GetCurrentMaterialStandingOn();
+            int index = Random.Range(0, StartOfRound.Instance.footstepSurfaces[currentFootstepSurfaceIndex].clips.Length);
+            if (index == previousFootstepClip)
+            {
+                index = (index + 1) % StartOfRound.Instance.footstepSurfaces[currentFootstepSurfaceIndex].clips.Length;
+            }
+            creatureSFX.pitch = Random.Range(0.93f, 1.07f);
+            creatureSFX.PlayOneShot(StartOfRound.Instance.footstepSurfaces[currentFootstepSurfaceIndex].clips[index], 0.6f);
+            previousFootstepClip = index;
+        }
+
         #endregion
 
         // RPC's
@@ -418,39 +484,33 @@ namespace SCP2006
         {
             if (!netRef.TryGet(out NetworkObject netObj)) { logger.LogError("Couldnt find network object in SpawnMimicEnemyClientRpc"); return; }
             if (!netObj.TryGetComponent(out mimicEnemy)) { logger.LogError("Couldnt find EnemyAI component in SpawnMimicEnemyClientRpc"); return; }
+            if (mimicEnemy == null) { return; }
 
-            foreach (var collider in mimicEnemy!.transform.root.gameObject.GetComponentsInChildren<Collider>())
+            /*foreach (var collider in mimicEnemy.transform.root.gameObject.GetComponentsInChildren<Collider>())
             {
                 collider.enabled = false;
-            }
+            }*/
+            //mimicEnemy.inSpecialAnimation = true; // TODO: Test this
 
-            mimicEnemy.inSpecialAnimation = true; // TODO: Test this
+            mimicEnemy.enabled = false; // TODO: Test this
 
             mesh.SetActive(false);
 
-            ScareDef scareDef = scareDefs.Where(x => x.enemyTypeName == mimicEnemy!.enemyType.name).First();
-            ScareDef.ScareVariant animationAudio = scareDef.variants[variantIndex];
+            currentScareDef = scareDefs.Where(x => x.enemyTypeName == mimicEnemy.enemyType.name).First();
+            currentVariantIndex = variantIndex;
 
-            creatureVoice.clip = animationAudio.clip;
-            creatureVoice.Play();
-            mimicEnemy!.creatureAnimator.SetTrigger(animationAudio.animName);
+            RoundManager.PlayRandomClip(creatureSFX, baitSFX);
         }
 
-        /*[ClientRpc]
-        public void ScareClientRpc(NetworkObjectReference netRef, int variantIndex)
+        [ClientRpc]
+        public void ScareClientRpc()
         {
-            if (!netRef.TryGet(out NetworkObject netObj)) { logger.LogError("Couldnt find network object in ScareClientRpc"); return; }
-            if (!netObj.TryGetComponent(out mimicEnemy)) { logger.LogError("Couldnt find EnemyAI component in ScareClientRpc"); return; }
-
-            mesh.SetActive(false);
-
-            ScareDef scareDef = scareDefs.Where(x => x.enemyTypeName == mimicEnemy!.enemyType.name).First();
-            ScareDef.AnimationAudio animationAudio = scareDef.variants[variantIndex];
-
-            creatureVoice.clip = animationAudio.clip;
+            creatureVoice.Stop();
+            creatureVoice.clip = currentVariant.clip;
             creatureVoice.Play();
-            mimicEnemy!.creatureAnimator.SetTrigger(animationAudio.animName);
-        }*/
+
+            mimicEnemy?.creatureAnimator.Play(currentVariant.animStateName); // TODO: Test this
+        }
 
         [ServerRpc(RequireOwnership = false)]
         public void DoAnimationServerRpc(string animationName, bool value)
