@@ -28,9 +28,10 @@ namespace SCP2006
         public static SCP2006AI? Instance { get; private set; }
 
 #pragma warning disable CS8618
+        public ParticleSystem particleSystem;
         public ScareDef[] scareDefs;
         public Transform turnCompass;
-        public GameObject mesh;
+        //public GameObject mesh;
         public AudioClip[] baitSFX;
 #pragma warning restore CS8618
 
@@ -51,7 +52,7 @@ namespace SCP2006
         float timeSinceReaction;
         float timeSinceLearnScare;
         float timeSinceStartScare;
-        float timeSinceTargetPlayer;
+        float timeSinceStartRoaming;
 
         EnemyAI? mimicEnemy;
         float currentScareAnimationTime;
@@ -141,7 +142,7 @@ namespace SCP2006
             timeSincePlayerCollision += Time.deltaTime;
             timeSinceReaction += Time.deltaTime;
             timeSinceStartScare += Time.deltaTime;
-            timeSinceTargetPlayer += Time.deltaTime;
+            timeSinceStartRoaming += Time.deltaTime;
 
             CustomEnemyAIUpdate();
         }
@@ -176,10 +177,8 @@ namespace SCP2006
                     agent.stoppingDistance = 0;
 
                     // Check line of sight for player
-                    if (timeSinceTargetPlayer > targetPlayerCooldown && TargetClosestPlayer(bufferDistance: default, requireLineOfSight: true))
+                    if (timeSinceStartRoaming > targetPlayerCooldown && TargetClosestPlayer(bufferDistance: default, requireLineOfSight: true))
                     {
-                        timeSinceTargetPlayer = 0f;
-
                         if (InLineOfSight())
                         {
                             inSpecialAnimation = true;
@@ -249,31 +248,45 @@ namespace SCP2006
                         return;
                     }
 
-                    SetDestinationToPosition();
+                    if (!SetDestinationToPosition(targetPlayer.transform.position, checkForPath: true))
+                    {
+                        timeSinceStartRoaming = 0f;
+                        targetPlayer = null;
+                        SwitchToBehaviourClientRpc((int)State.Roaming);
+                        return;
+                    }
 
                     break;
 
                 case (int)State.Spotted:
-                    agent.speed = 5;
+                    agent.speed = 7;
                     agent.stoppingDistance = 0;
+
+                    
 
                     break;
 
                 case (int)State.Scaring:
-                    agent.speed = 5;
+                    agent.speed = 0;
                     agent.stoppingDistance = 0;
+
+
 
                     break;
 
                 case (int)State.Reaction:
-                    agent.speed = 5;
+                    agent.speed = 0;
                     agent.stoppingDistance = 0;
+
+
 
                     break;
 
                 case (int)State.Resting:
-                    agent.speed = 5;
+                    agent.speed = 0;
                     agent.stoppingDistance = 0;
+
+
 
                     break;
 
@@ -402,17 +415,10 @@ namespace SCP2006
             if (mimicEnemy == null || !mimicEnemy.NetworkObject.IsSpawned) { return; }
             logger.LogDebug("Despawning mimic enemy " + mimicEnemy.enemyType.name);
 
-            /*switch (mimicEnemy.enemyType.name)
-            {
-                case "Butler":
-                    ButlerEnemyAI.murderMusicAudio.Stop();
-                    break;
-                default:
-                    break;
-            }*/
-
             mimicEnemy.NetworkObject.Despawn(true);
             mimicEnemy = null;
+            EnableEnemyMesh(true);
+            DespawnMimicEnemyClientRpc();
         }
 
         void GetCurrentMaterialStandingOn()
@@ -480,6 +486,13 @@ namespace SCP2006
         // RPC's
 
         [ClientRpc]
+        public void DespawnMimicEnemyClientRpc()
+        {
+            mimicEnemy = null;
+            EnableEnemyMesh(true);
+        }
+
+        [ClientRpc]
         public void SpawnMimicEnemyClientRpc(NetworkObjectReference netRef, int variantIndex)
         {
             if (!netRef.TryGet(out NetworkObject netObj)) { logger.LogError("Couldnt find network object in SpawnMimicEnemyClientRpc"); return; }
@@ -494,7 +507,7 @@ namespace SCP2006
 
             mimicEnemy.enabled = false; // TODO: Test this
 
-            mesh.SetActive(false);
+            EnableEnemyMesh(false);
 
             currentScareDef = scareDefs.Where(x => x.enemyTypeName == mimicEnemy.enemyType.name).First();
             currentVariantIndex = variantIndex;
