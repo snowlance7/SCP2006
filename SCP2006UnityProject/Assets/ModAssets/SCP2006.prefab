@@ -933,9 +933,9 @@ MonoBehaviour:
   stunnedByPlayer: {fileID: 0}
   debugEnemyAI: 0
   isOutside: 0
+  particleSystem: {fileID: 7267222760429164188}
   scareDefs: []
   turnCompass: {fileID: 5109468747935260309}
-  mesh: {fileID: 0}
   baitSFX: []
 --- !u!95 &2759098859565932773
 Animator:
