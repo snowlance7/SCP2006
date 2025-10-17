@@ -32,7 +32,21 @@ namespace SCP2006
             if (!Utils.isBeta) { return; }
             if (!Utils.testing) { return; }
 
-
+            /*for (int i = 0; i < playerListSlots.Length; i++) // playerListSlots is in QuickMenuManager
+            {
+                if (playerListSlots[i].isConnected)
+                {
+                    float num = playerListSlots[i].volumeSlider.value / playerListSlots[i].volumeSlider.maxValue;
+                    if (num == -1f)
+                    {
+                        SoundManager.Instance.playerVoiceVolumes[i] = -70f;
+                    }
+                    else
+                    {
+                        SoundManager.Instance.playerVoiceVolumes[i] = num;
+                    }
+                }
+            }*/
         }
 
         [HarmonyPrefix, HarmonyPatch(typeof(HUDManager), nameof(HUDManager.SubmitChat_performed))]

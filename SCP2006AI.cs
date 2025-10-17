@@ -17,6 +17,7 @@ using LethalLib.Modules;
 - handOut (bool)
 - think
 - wave
+- sh
  */
 
 namespace SCP2006
@@ -67,7 +68,7 @@ namespace SCP2006
         private Transform? farthestNodeFromTargetPlayer;
         bool gettingFarthestNodeFromPlayerAsync;
 
-        ScareDef.ScareVariant currentVariant => currentScareDef.variants[currentVariantIndex];
+        ScareDef.ScareVariant currentVariant => currentScareDef!.variants[currentVariantIndex];
 
         // Configs
         const float learnScareCooldown = 5f;
@@ -272,7 +273,7 @@ namespace SCP2006
                         SpawnMimicEnemy();
                         DoAnimationClientRpc("sneaking", false);
                         timeSinceStartScare = 0f;
-                        SwitchToBehaviourClientRpc((int)State.Scaring); // TODO: Continue here
+                        SwitchToBehaviourClientRpc((int)State.Scaring);
                         return;
                     }
 
@@ -323,7 +324,7 @@ namespace SCP2006
 
                     if (!SetDestinationToPosition(targetPlayer.transform.position, true))
                     {
-                        RemoveScarePoint(currentScareDef!.enemyTypeName);
+                        //RemoveScarePoint(currentScareDef!.enemyTypeName);
                         DespawnMimicEnemy();
                         timeSinceStartRoaming = 0f;
                         SwitchToBehaviourClientRpc((int)State.Roaming);
