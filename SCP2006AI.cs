@@ -1,12 +1,13 @@
 ﻿using BepInEx.Logging;
 using GameNetcodeStuff;
+using HarmonyLib;
+using LethalLib.Modules;
 using System.Collections.Generic;
 using System.Linq;
 using Unity.Netcode;
 using UnityEngine;
 using static SCP2006.Plugin;
 using static SCP2006.Utils;
-using LethalLib.Modules;
 
 /* Animations:
 - speed (float)
@@ -32,9 +33,26 @@ namespace SCP2006
         public ParticleSystem particleSystem;
         public ScareDef[] scareDefs;
         public Transform turnCompass;
-        //public GameObject mesh;
+        //public GameObject meshObj;
         public AudioClip[] baitSFX;
+        public Transform handTransform;
+        public InteractTrigger handInteractTrigger;
 #pragma warning restore CS8618
+
+        HashSet<string> triggeredActions = new HashSet<string>();
+        int score = 0;
+
+        // point values per action
+        Dictionary<string, int> points = new Dictionary<string, int>()
+        {
+            { "Yell", 4 },
+            { "CameraTurn", 1 },
+            { "Jump", 1 },
+            { "Run", 3 },
+            { "Attack", 2 },
+            { "CloseDoor", 2 },
+            { "NoLineOfSight", 3 }
+        };
 
         public static Dictionary<string, int> learnedScares = [];
 
@@ -43,18 +61,20 @@ namespace SCP2006
 
         PlayerControllerB? lastSeenPlayer;
 
+        VHSTapeBehavior? heldTape;
+
         bool facePlayer;
-        PlayerControllerB? playerToFace;
         float turnCompassSpeed = 30f;
 
         public bool isInsideFactory => !isOutside;
 
-        float timeSincePlayerCollision;
         float timeSinceStartReaction;
         float timeSinceLearnScare;
         float timeSinceStartScare;
         float timeSinceStartRoaming;
         float timeSinceLastSeen;
+
+        int hashSneaking;
 
         EnemyAI? mimicEnemy;
 
@@ -62,13 +82,18 @@ namespace SCP2006
         int currentVariantIndex;
         bool usingDefaultScare;
         bool inScareAnimation;
+        bool spottedByOtherPlayer;
 
         int currentFootstepSurfaceIndex;
         int previousFootstepClip;
-        private Transform? farthestNodeFromTargetPlayer;
+        Transform? farthestNodeFromTargetPlayer;
         bool gettingFarthestNodeFromPlayerAsync;
+        
+        Vector2 lastCameraAngles;
 
         ScareDef.ScareVariant currentVariant => currentScareDef!.variants[currentVariantIndex];
+
+        public enum ReactionType { Yell, Sprint, FastTurn, Jump}
 
         // Configs
         const float learnScareCooldown = 5f;
@@ -78,6 +103,11 @@ namespace SCP2006
         const float distanceToStopScare = 10f;
         const float spottedLOSCooldown = 15f;
         const float timeToStopScare = 15f;
+        const float lineOfSightOffset = 2f;
+        const float playerScreamMinVolume = 0.9f;
+        const float reactionDelay = 3f;
+        const int scareSuccessfulScore = 5;
+        const float maxTurnSpeed = 1000f;
 
         public enum State
         {
@@ -95,6 +125,8 @@ namespace SCP2006
             logger.LogDebug("SCP-2006 Spawned");
             mainEntranceInsidePosition = RoundManager.FindMainEntrancePosition();
             mainEntranceOutsidePosition = RoundManager.FindMainEntrancePosition(false, true);
+
+            hashSneaking = Animator.StringToHash("sneaking");
         }
 
         public override void OnNetworkSpawn()
@@ -147,7 +179,6 @@ namespace SCP2006
             }
 
             timeSinceLearnScare += Time.deltaTime;
-            timeSincePlayerCollision += Time.deltaTime;
             timeSinceStartReaction += Time.deltaTime;
             timeSinceStartScare += Time.deltaTime;
             timeSinceStartRoaming += Time.deltaTime;
@@ -177,11 +208,13 @@ namespace SCP2006
                 //mimicEnemy.SetDestinationToPosition(transform.position);
             }
 
-            if (facePlayer && playerToFace != null && IsServer)
+            if (facePlayer && targetPlayer != null && IsServer)
             {
-                turnCompass.LookAt(playerToFace.gameplayCamera.transform.position);
+                turnCompass.LookAt(targetPlayer.gameplayCamera.transform.position);
                 transform.rotation = Quaternion.Lerp(transform.rotation, Quaternion.Euler(new Vector3(0f, turnCompass.eulerAngles.y, 0f)), turnCompassSpeed * Time.deltaTime);
             }
+
+            creatureAnimator.SetBool(hashSneaking, currentBehaviourStateIndex == (int)State.Sneaking);
         }
 
         public override void DoAIInterval()
@@ -196,6 +229,7 @@ namespace SCP2006
                 case (int)State.Roaming:
                     agent.speed = 5;
                     agent.stoppingDistance = 0;
+                    facePlayer = false;
 
                     // Check line of sight for player
                     if (timeSinceStartRoaming > targetPlayerCooldown && TargetClosestPlayer(bufferDistance: default, requireLineOfSight: true))
@@ -210,10 +244,10 @@ namespace SCP2006
                             return;
                         }
 
-                        agent.ResetPath();
-                        currentScareDef = GetRandomScare();
+                        //agent.ResetPath();
+                        currentScareDef = GetWeightedRandomScare();
                         currentVariantIndex = UnityEngine.Random.Range(0, currentScareDef.variants.Length);
-                        DoAnimationClientRpc("sneaking", true);
+                        //DoAnimationClientRpc("sneaking", true);
                         SwitchToBehaviourClientRpc((int)State.Sneaking);
                         return;
                     }
@@ -239,6 +273,7 @@ namespace SCP2006
                     }
 
                     // Roam logic
+                    if (Utils.isBeta && Utils.DEBUG_disableMoving) { return; }
                     if (HasReachedTargetNode())
                     {
                         targetNode = Utils.GetRandomNode()?.transform;
@@ -256,12 +291,13 @@ namespace SCP2006
                 case (int)State.Sneaking:
                     agent.speed = 7;
                     agent.stoppingDistance = distanceToStartScare;
+                    facePlayer = false;
 
                     if (InLineOfSightWithPlayer()) // TODO: TEST THIS // TODO: Add finger shhh animation if not targetPlayer
                     {
                         inSpecialAnimation = true;
-                        DoAnimationClientRpc("sneaking", false);
                         DoAnimationClientRpc("spotted");
+                        //DoAnimationClientRpc("sneaking", false);
                         targetNode = ChooseFarthestNodeFromPosition(transform.position, true);
                         targetPlayer = null;
                         SwitchToBehaviourClientRpc((int)State.Spotted);
@@ -271,17 +307,19 @@ namespace SCP2006
                     if (Vector3.Distance(transform.position, targetPlayer.transform.position) <= distanceToStartScare)
                     {
                         SpawnMimicEnemy();
-                        DoAnimationClientRpc("sneaking", false);
+                        //DoAnimationClientRpc("sneaking", false);
                         timeSinceStartScare = 0f;
+                        spottedByOtherPlayer = false;
                         SwitchToBehaviourClientRpc((int)State.Scaring);
                         return;
                     }
 
+                    if (Utils.isBeta && Utils.DEBUG_disableMoving) { return; }
                     if (!SetDestinationToPosition(targetPlayer.transform.position, checkForPath: true))
                     {
                         timeSinceStartRoaming = 0f;
                         targetPlayer = null;
-                        DoAnimationClientRpc("sneaking", false);
+                        //DoAnimationClientRpc("sneaking", false);
                         SwitchToBehaviourClientRpc((int)State.Roaming);
                         return;
                     }
@@ -298,6 +336,9 @@ namespace SCP2006
                         SwitchToBehaviourClientRpc((int)State.Roaming);
                     }
 
+                    // TODO: Check if player has tape here and 
+
+                    if (Utils.isBeta && Utils.DEBUG_disableMoving) { return; }
                     AvoidPlayers();
 
                     break;
@@ -305,18 +346,14 @@ namespace SCP2006
                 case (int)State.Scaring:
                     agent.speed = 5;
                     agent.stoppingDistance = distanceToStartScare * 1.5f;
+                    facePlayer = true;
 
-                    if (InLineOfSightWithPlayer()) // TODO: Add finger shhh animation if not targetPlayer
+                    if (targetPlayer.HasLineOfSightToPosition(transform.position + Vector3.up * lineOfSightOffset)) // TODO: Add finger shhh animation if not targetPlayer
                     {
-                        if (lastSeenPlayer != targetPlayer)
-                        {
-                            DespawnMimicEnemy();
-                            DoAnimationClientRpc("spotted");
-                            SwitchToBehaviourClientRpc((int)State.Spotted);
-                            return;
-                        }
-
+                        timeSinceLastSeen = 0f;
                         timeSinceStartReaction = 0f;
+                        triggeredActions.Clear();
+                        score = 0;
                         SwitchToBehaviourStateOnLocalClient((int)State.Reaction);
                         ScareClientRpc(); // Calls SwitchToBehaviourStateOnLocalClient((int)State.Reaction)
                         return;
@@ -338,6 +375,12 @@ namespace SCP2006
                         return;
                     }
 
+                    if (!spottedByOtherPlayer && InLineOfSightWithPlayer())
+                    {
+                        spottedByOtherPlayer = true;
+                        DoAnimationClientRpc("shush");
+                    }
+
                     break;
 
                 case (int)State.Reaction:
@@ -345,17 +388,41 @@ namespace SCP2006
                     agent.stoppingDistance = 0;
 
                     facePlayer = true;
-                    playerToFace = targetPlayer;
 
-                    // TODO: Continue here, use detect noise to detect if player is screaming, use targetPlayer.isSprinting, etc, for others
+                    if (timeSinceStartReaction > reactionDelay)
+                    {
+                        if (targetPlayer.isSprinting) { TriggerReaction("Run"); }
+                        if (targetPlayer.isJumping) { TriggerReaction("Jump"); }
+                        TrackCameraMovement();
+                        if (!triggeredActions.Contains("NoLineOfSight") && !HasLineOfSightToPlayer(targetPlayer)) { TriggerReaction("NoLineOfSight"); }
+                    }
+
+                    if ((timeSinceStartReaction - reactionDelay) > currentVariant.time)
+                    {
+                        // Count up points
+                        if (score >= scareSuccessfulScore)
+                        {
+                            AddScarePoint(currentScareDef!.enemyTypeName);
+                            inSpecialAnimation = true;
+                            DoAnimationClientRpc("laugh");
+                        }
+                        else
+                        {
+                            RemoveScarePoint(currentScareDef!.enemyTypeName);
+                        }
+
+                        SwitchToBehaviourClientRpc((int)State.Spotted);
+                        return;
+                    }
 
                     break;
 
                 case (int)State.Resting:
                     agent.speed = 0;
                     agent.stoppingDistance = 0;
+                    facePlayer = false;
 
-
+                    // TODO
 
                     break;
 
@@ -363,6 +430,19 @@ namespace SCP2006
                     logger.LogWarning("Invalid state: " + currentBehaviourStateIndex);
                     break;
             }
+        }
+
+        public void TriggerReaction(string actionName)
+        {
+            // ignore if already triggered once
+            if (triggeredActions.Contains(actionName)) return;
+
+            triggeredActions.Add(actionName);
+
+            if (points.TryGetValue(actionName, out int p))
+                score += p;
+
+            Debug.Log($"Triggered {actionName}: +{points[actionName]} (total {score})");
         }
 
         void AddScarePoint(string enemyTypeName)
@@ -379,7 +459,7 @@ namespace SCP2006
             learnedScares[enemyTypeName]--;
         }
 
-        ScareDef GetRandomScare()
+        ScareDef GetWeightedRandomScare()
         {
             string[] scareNames = learnedScares.Keys.ToArray();
             int[] weights = learnedScares.Values.ToArray();
@@ -456,11 +536,30 @@ namespace SCP2006
                     Vector3 to = position - eye.position;
                     if (Vector3.Angle(eye.forward, to) < width || (proximityAwareness != -1 && Vector3.Distance(eye.position, position) < (float)proximityAwareness))
                     {
-                        if (!player.HasLineOfSightToPosition(transform.position + Vector3.up * 2, range: range)) { continue; }
+                        if (!player.HasLineOfSightToPosition(transform.position + Vector3.up * lineOfSightOffset, range: range)) { continue; }
                         timeSinceLastSeen = 0f;
                         lastSeenPlayer = player;
                         return true;
                     }
+                }
+            }
+            return false;
+        }
+
+        bool HasLineOfSightToPlayer(PlayerControllerB player, float width = 45f, int range = 20, int proximityAwareness = -1)
+        {
+            if (isOutside && !enemyType.canSeeThroughFog && TimeOfDay.Instance.currentLevelWeather == LevelWeatherType.Foggy)
+            {
+                range = Mathf.Clamp(range, 0, 30);
+            }
+            Vector3 position = player.gameplayCamera.transform.position;
+            if (Vector3.Distance(position, eye.position) < (float)range && !Physics.Linecast(eye.position, position, StartOfRound.Instance.collidersAndRoomMaskAndDefault, QueryTriggerInteraction.Ignore))
+            {
+                Vector3 to = position - eye.position;
+                if (Vector3.Angle(eye.forward, to) < width || (proximityAwareness != -1 && Vector3.Distance(eye.position, position) < (float)proximityAwareness))
+                {
+                    lastSeenPlayer = player;
+                    return true;
                 }
             }
             return false;
@@ -484,15 +583,53 @@ namespace SCP2006
             }
 
             agent.speed = 0f;
-            playerToFace = lastSeenPlayer;
+            targetPlayer = lastSeenPlayer;
             facePlayer = true;
         }
+
+        /* NoiseIDs
+         * 6: player footsteps
+         * 75: player voice chat
+         */
 
         public override void DetectNoise(Vector3 noisePosition, float noiseLoudness, int timesPlayedInOneSpot = 0, int noiseID = 0)
         {
             base.DetectNoise(noisePosition, noiseLoudness, timesPlayedInOneSpot, noiseID);
             logger.LogDebug($"Detected noise with id of: {noiseID} noiseLoudness: {noiseLoudness} timesPlayedInOneSpot: {timesPlayedInOneSpot}");
             // TODO
+            if (timeSinceLearnScare > learnScareCooldown && currentBehaviourStateIndex == (int)State.Roaming)
+            {
+                Transform? closestNode = Utils.GetClosestAINodeToPosition(noisePosition);
+                if (closestNode != null) { targetNode = closestNode; }
+            }
+            
+            if (currentBehaviourStateIndex == (int)State.Reaction
+                && targetPlayer != null
+                && noiseLoudness >= playerScreamMinVolume
+                && noiseID == 75
+                && Vector3.Distance(targetPlayer.transform.position, noisePosition) < 1f)
+            {
+                TriggerReaction("Yell");
+            }
+        }
+
+        void TrackCameraMovement()
+        {
+            if (triggeredActions.Contains("CameraTurn")) { return; }
+            Vector2 currentAngles = new Vector2(targetPlayer.gameplayCamera.transform.eulerAngles.x, targetPlayer.gameplayCamera.transform.eulerAngles.y);
+
+            // Calculate delta, account for angle wrapping (360 to 0)
+            float deltaX = Mathf.DeltaAngle(lastCameraAngles.x, currentAngles.x);
+            float deltaY = Mathf.DeltaAngle(lastCameraAngles.y, currentAngles.y);
+
+            // Combine both axes into a single turn speed value
+            float cameraTurnSpeed = new Vector2(deltaX, deltaY).magnitude / Time.deltaTime;
+            lastCameraAngles = currentAngles;
+
+            if (cameraTurnSpeed > maxTurnSpeed)
+            {
+                TriggerReaction("CameraTurn");
+            }
         }
 
         public bool PlayerIsTargetable(PlayerControllerB playerScript)
@@ -545,31 +682,26 @@ namespace SCP2006
             }
         }
 
-        #region Overrides
-
         public override void HitEnemy(int force = 0, PlayerControllerB playerWhoHit = null!, bool playHitSFX = true, int hitID = -1) // Synced
         {
             logger.LogDebug("In HitEnemy()");
 
+            if (!IsServer) { return; }
 
+            if (currentBehaviourStateIndex == (int)State.Reaction)
+            {
+                TriggerReaction("Attack");
+                return;
+            }
+
+            inSpecialAnimation = true;
+            DoAnimationClientRpc("spotted");
+            //DoAnimationClientRpc("sneaking", false);
+            targetNode = ChooseFarthestNodeFromPosition(transform.position, true);
+            targetPlayer = null;
+            SwitchToBehaviourClientRpc((int)State.Spotted);
         }
 
-        public override void OnCollideWithPlayer(Collider other) // This only runs on client collided with
-        {
-            base.OnCollideWithPlayer(other);
-            if (isEnemyDead) { return; }
-            //if (timeSincePlayerCollision < 3f) { return; }
-            if (inSpecialAnimation) { return; }
-            PlayerControllerB? player = other.gameObject.GetComponent<PlayerControllerB>();
-            if (player == null || !PlayerIsTargetable(player) || player != localPlayer) { return; }
-
-
-        }
-
-
-        #endregion
-
-        #region Animation
         // Animation Functions
 
         public void SetInSpecialAnimationFalse() => inSpecialAnimation = false;
@@ -589,48 +721,62 @@ namespace SCP2006
             previousFootstepClip = index;
         }
 
-        #endregion
+        public void GiveTape() // InteractTrigger
+        {
+            logger.LogDebug("Giving tape to SCP-2006");
+            VHSTapeBehavior? tape = localPlayer.currentlyHeldObjectServer as VHSTapeBehavior;
+            if (tape == null) { return; }
+
+            localPlayer.DiscardHeldObject();
+            GiveTapeServerRpc(tape.NetworkObject);
+        }
 
         // RPC's
 
-        /*[ClientRpc]
-        public new void SwitchToBehaviourClientRpc(int stateIndex)
+        [ServerRpc(RequireOwnership = false)]
+        public void GiveTapeServerRpc(NetworkObjectReference netRef)
         {
-            if (stateIndex != currentBehaviourStateIndex)
+            if (!IsServer) { return; }
+            GiveTapeClientRpc(netRef);
+        }
+
+        [ClientRpc]
+        public void GiveTapeClientRpc(NetworkObjectReference netRef)
+        {
+            if (!netRef.TryGet(out NetworkObject netObj)) { return; }
+            if (!netObj.TryGetComponent(out VHSTapeBehavior tape)) { return; }
+
+            creatureAnimator.SetBool("handOut", false);
+
+            tape.parentObject = handTransform;
+            tape.hasHitGround = false;
+            tape.isHeldByEnemy = true;
+            tape.GrabItemFromEnemy(this);
+            tape.EnablePhysics(false);
+            HoarderBugAI.grabbableObjectsInMap.Remove(tape.gameObject);
+            heldTape = tape;
+        }
+
+        [ClientRpc]
+        public void DropTapeClientRpc(Vector3 position)
+        {
+            if (heldTape == null)
             {
-                switch (stateIndex)
-                {
-                    case (int)State.Roaming:
-                        timeSinceStartRoaming = 0f;
-
-                        break;
-
-                    case (int)State.Sneaking:
-
-                        break;
-
-                    case (int)State.Spotted:
-    
-                        break;
-
-                    case (int)State.Scaring:
-
-                        break;
-
-                    case (int)State.Reaction:
-
-                        break;
-
-                    case (int)State.Resting:
-
-                        break;
-                    default:
-                        break;
-                }
-
-                SwitchToBehaviourStateOnLocalClient(stateIndex);
+                return;
             }
-        }*/
+            GrabbableObject tape = heldTape;
+            tape.parentObject = null;
+            tape.transform.SetParent(StartOfRound.Instance.propsContainer, worldPositionStays: true);
+            tape.EnablePhysics(enable: true);
+            tape.fallTime = 0f;
+            tape.startFallingPosition = tape.transform.parent.InverseTransformPoint(tape.transform.position);
+            tape.targetFloorPosition = tape.transform.parent.InverseTransformPoint(position);
+            tape.floorYRot = -1;
+            tape.DiscardItemFromEnemy();
+            tape.isHeldByEnemy = false;
+            HoarderBugAI.grabbableObjectsInMap.Add(tape.gameObject);
+            heldTape = null;
+        }
 
         [ClientRpc]
         public void DespawnMimicEnemyClientRpc()
@@ -705,6 +851,32 @@ namespace SCP2006
         public void SetEnemyOutsideClientRpc(bool value)
         {
             SetEnemyOutside(value);
+        }
+    }
+
+    [HarmonyPatch]
+    internal class SCP2006AIPatches
+    {
+        private static ManualLogSource logger = LoggerInstance;
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(DoorLock), nameof(DoorLock.OpenOrCloseDoor))]
+        public static void OpenOrCloseDoorPostfix(DoorLock __instance, PlayerControllerB playerWhoTriggered)
+        {
+            try
+            {
+                if (!IsServerOrHost
+                    || SCP2006AI.Instance == null
+                    || SCP2006AI.Instance.currentBehaviourStateIndex != (int)SCP2006AI.State.Reaction
+                    || playerWhoTriggered != SCP2006AI.Instance.targetPlayer)
+                { return; }
+
+                SCP2006AI.Instance.TriggerReaction("CloseDoor");
+            }
+            catch
+            {
+                return;
+            }
         }
     }
 }

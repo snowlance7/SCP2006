@@ -25,7 +25,7 @@ namespace SCP2006
         public static bool inTestRoom => StartOfRound.Instance?.testRoom != null;
         public static bool disableSpawning = false;
         public static bool disableTargetting = false;
-        public static bool disableMoving = false;
+        public static bool DEBUG_disableMoving = true;
 
         public static bool localPlayerFrozen = false;
 
@@ -214,6 +214,25 @@ namespace SCP2006
                 LoggerInstance.LogError($"Error: {e}");
                 return null;
             }
+        }
+
+        public static Transform? GetClosestAINodeToPosition(Vector3 pos)
+        {
+            Transform? closestTransform = null;
+            float closestDistance = Mathf.Infinity;
+
+            foreach (var node in allAINodes)
+            {
+                if (node == null) { continue; }
+
+                float distance = Vector3.Distance(pos, node.transform.position);
+                if (distance > closestDistance) { continue; }
+
+                closestDistance = distance;
+                closestTransform = node.transform;
+            }
+
+            return closestTransform;
         }
 
         public static Vector3 GetBestThrowDirection(Vector3 origin, Vector3 forward, int rayCount, float maxDistance, LayerMask layerMask)

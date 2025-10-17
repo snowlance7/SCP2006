@@ -52,37 +52,20 @@ namespace SCP2006
             InitializeNetworkBehaviours();
 
             InitConfigs();
-            /*
+            
             // Loading Assets
             string sAssemblyLocation = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
 
-            ModAssets = AssetBundle.LoadFromFile(Path.Combine(Path.GetDirectoryName(Info.Location), "spooky_assets"));
+            ModAssets = AssetBundle.LoadFromFile(Path.Combine(Path.GetDirectoryName(Info.Location), "scp2006_assets"));
             if (ModAssets == null)
             {
                 Logger.LogError($"Failed to load custom assets.");
                 return;
             }
-            LoggerInstance.LogDebug($"Got AssetBundle at: {Path.Combine(sAssemblyLocation, "spooky_assets")}");
-            */
-            /*Item Knife = ModAssets.LoadAsset<Item>("Assets/ModAssets/Knife/YulemanKnifeItem.asset");
-            if (Knife == null) { LoggerInstance.LogError("Error: Couldnt get YulemanKnifeItem from assets"); return; }
-            LoggerInstance.LogDebug($"Got YulemanKnife prefab");
-            Knife.minValue = configKnifeMinValue.Value;
-            Knife.maxValue = configKnifeMaxValue.Value;
-            LethalLib.Modules.NetworkPrefabs.RegisterNetworkPrefab(Knife.spawnPrefab);
-            Utilities.FixMixerGroups(Knife.spawnPrefab);
-            LethalLib.Modules.Items.RegisterScrap(Knife);*/
-            /*
-            EnemyType SCP2006 = ModAssets.LoadAsset<EnemyType>("");
-            if (SCP2006 == null) { LoggerInstance.LogError("Error: Couldnt get SCP-2006 from assets"); return; }
-            LoggerInstance.LogDebug($"Got SCP-2006 prefab");
-            TerminalNode SpookyTN = ModAssets.LoadAsset<TerminalNode>("");
-            TerminalKeyword SpookyTK = ModAssets.LoadAsset<TerminalKeyword>("");
-            LoggerInstance.LogDebug("Registering enemy network prefab...");
-            LethalLib.Modules.NetworkPrefabs.RegisterNetworkPrefab(SCP2006.enemyPrefab);
-            LoggerInstance.LogDebug("Registering enemy...");
-            Enemies.RegisterEnemy(SCP2006, GetLevelRarities(config2006LevelRarities.Value), GetCustomLevelRarities(config2006CustomLevelRarities.Value), SpookyTN, SpookyTK);
-            */
+            LoggerInstance.LogDebug($"Got AssetBundle at: {Path.Combine(sAssemblyLocation, "scp2006_assets")}");
+
+            Utils.RegisterEnemy("Assets/ModAssets/SCP2006.asset", "Assets/ModAssets/Bestiary/SCP2006TN.asset", "Assets/ModAssets/Bestiary/SCP2006TK.asset", config2006LevelRarities.Value, config2006CustomLevelRarities.Value);
+
             // Finished
             Logger.LogInfo($"{MyPluginInfo.PLUGIN_GUID} v{MyPluginInfo.PLUGIN_VERSION} has loaded!");
         }

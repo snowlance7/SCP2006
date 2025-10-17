@@ -14,14 +14,24 @@ namespace SCP2006
         public SpriteRenderer spriteRenderer;
 #pragma warning restore CS8618
 
+        public static HashSet<VHSTapeBehavior> spawnedTapes = [];
+
         public int scareDefIndex;
 
         public override void Start()
         {
             base.Start();
+
+            spawnedTapes.Add(this);
+
             if (!IsServer) { return; }
-            
             int index = UnityEngine.Random.Range(0, scareDefs.Length);
+        }
+
+        public override void OnDestroy()
+        {
+            spawnedTapes.Remove(this);
+            base.OnDestroy();
         }
 
         [ClientRpc]
